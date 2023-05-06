@@ -1,0 +1,28 @@
+{
+    "name": "binkap/curl",
+    "description": "Object oriented wrapper PHP cURL extension.",
+    "type": "library",
+    "license": "MIT",
+    "homepage": "https://github.com/binkapS/curl",
+    "keywords": [
+        "curl",
+        "oop curl",
+        "curl wrapper"
+    ],
+    "autoload": {
+        "psr-4": {
+            "Binkap\\Curl\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Binkap S",
+            "email": "real.desert.tiger@gmail.com"
+        }
+    ],
+    "minimum-stability": "dev",
+    "require": {
+        "php": "^8.0",
+        "ext-curl": "*"
+    }
+}
