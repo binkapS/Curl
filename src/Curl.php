@@ -5,11 +5,10 @@ declare(strict_types=1);
 namespace Binkap\Curl;
 
 use Binkap\Curl\Curl\Auth;
-use Binkap\Curl\Curl\Field;
 use Binkap\Curl\Curl\Header;
 use Binkap\Curl\Curl\HttpVersion;
 use Binkap\Curl\Curl\Method;
-use Binkap\Curl\Curl\MultiField;
+use Binkap\Curl\Curl\Response;
 use Binkap\Curl\Exception\CurlException;
 use Binkap\Curl\Interface\FieldInterface;
 
@@ -33,16 +32,40 @@ class Curl
     private Header $headers;
 
     /**
+     * Request Url
+     *
+     * @var string|null
+     */
+    private string|null $url = null;
+
+    /**
+     * Curl response
+     *
+     * @var string|false|null
+     */
+    private string|false|null $response = null;
+
+    /**
+     * Set to true to enable library in strict mode
+     * Set to false and library assist with some methods
+     *
+     * @var boolean
+     */
+    private bool $strict;
+
+    /**
      * Curl Constructor
      *
      * @param  string|null $url The URL to fetch.
      */
-    public function __construct(string|null $url = null)
+    public function __construct(string|null $url = null, bool $strict = false)
     {
         if (!extension_loaded('curl')) {
             throw new CurlException('The cURL extensions is not loaded, make sure you have installed the cURL extension: https://php.net/manual/curl.setup.php');
         }
-        $this->init($url);
+        $this->url = $url;
+        $this->strict = $strict;
+        $this->init();
     }
 
     /**
@@ -54,7 +77,8 @@ class Curl
      */
     public function setUrl(string $url): self
     {
-        return $this->setOpt(CURLOPT_URL, $url);
+        $this->url = $url;
+        return $this->setOpt(CURLOPT_URL, $this->url);
     }
 
     /**
@@ -146,7 +170,7 @@ class Curl
      */
     public function setHttpVersion(HttpVersion $version): self
     {
-        return $this->setOpt(\CURLOPT_HTTP_VERSION, $version);
+        return $this->setOpt(\CURLOPT_HTTP_VERSION, $version->value);
     }
 
     /**
@@ -232,7 +256,7 @@ class Curl
      */
     public function setRequestMethod(Method $method): self
     {
-        return $this->setOpt(\CURLOPT_CUSTOMREQUEST, $method);
+        return $this->setOpt(\CURLOPT_CUSTOMREQUEST, $method->value);
     }
 
     /**
@@ -246,6 +270,19 @@ class Curl
     {
         return $this->setOpt(\CURLOPT_VERBOSE, $value);
     }
+
+    /**
+     * Set whether cUrl to verify peer's certificate
+     *
+     * @param  boolean $verify FALSE to stop cURL from verifying the peer's certificate
+     *
+     * @return self
+     */
+    public function setVerifySSL(bool $verify): self
+    {
+        return $this->setOpt(\CURLOPT_SSL_VERIFYPEER, $verify);
+    }
+
 
     /**
      * TRUE to return the transfer as a string
@@ -362,9 +399,9 @@ class Curl
     /**
      * Get the current session Url
      *
-     * @return string|null
+     * @return string|false
      */
-    public function getUrl(): string|null
+    public function getUrl(): string|false
     {
         return $this->getOpt(\CURLOPT_URL);
     }
@@ -387,6 +424,29 @@ class Curl
     public function getErrorCode(): int
     {
         return \curl_errno($this->curl);
+    }
+
+    /**
+     * Get Curl Response
+     *
+     * @param boolean $useResponseObject
+     * Set to true to get The Response Object Instead of a string
+     *
+     * @return \Binkap\Curl\Curl\Response|string
+     */
+    public function getResponse(bool $useResponseObject = \false): Response|string
+    {
+        /* Check if curl is executed 
+            If false execute curl and strict mode is false 
+        */
+        if (\is_null($this->response) && !$this->strict) {
+            $this->exec();
+        } elseif (\is_null($this->response) && $this->strict) {
+            $this->throw("Execute Call the (Curl::exec()) before using the Curl::getResponse()", 500);
+        }
+        return $useResponseObject
+            ? new Response($this->response)
+            : $this->response;
     }
 
     /**
@@ -439,12 +499,14 @@ class Curl
     /**
      * Perform a cURL session
      *
-     * @return string|boolean
+     * @return self
      */
-    public function exec(): string|bool
+    public function exec(): self
     {
         $this->validate();
-        return \curl_exec($this->curl);
+        $this->response = \curl_exec($this->curl);
+        $this->close();
+        return $this;
     }
 
     /**
@@ -473,14 +535,26 @@ class Curl
     /**
      * Initialize a cURL session
      *
-     * @param  string|null $url The URL to fetch.
      *
-     * @return \CurlHandle|false
+     * @return void
      */
-    private function init(string|null $url): \CurlHandle|false
+    private function init(): void
     {
         $this->headers = new Header();
-        return \curl_init($url);
+        $this->curl = \curl_init($this->url);
+        if (!$this->strict) {
+            $this->setDefault();
+        }
+    }
+
+    /**
+     * Initialize Default Params
+     *
+     * @return void
+     */
+    private function setDefault()
+    {
+        $this->setReturnTransfer(true);
     }
 
     /**
@@ -491,6 +565,7 @@ class Curl
     private function close()
     {
         \curl_close($this->curl);
+        $this->verifyResponse();
     }
 
     /**
@@ -507,10 +582,36 @@ class Curl
      * @return void
      * @throws Binkap\Curl\Exception\CurlException
      */
-    private function validate()
+    private function validate(): void
     {
-        if (\is_null($this->getUrl())) {
-            throw new CurlException("Undefined Request Url");
+        if (\is_null($this->url)) {
+            $this->throw("Undefined Request Url", 500);
         }
+    }
+
+    /**
+     * Ensure Response is not an Error
+     *
+     * @return void
+     */
+    private function verifyResponse(): void
+    {
+        if (($this->getResponseCode() == 200 || $this->getResponseCode() == 201) && $this->getErrorCode() == 0) {
+            return;
+        }
+        $this->throw($this->getErrorMessage(), $this->getResponseCode());
+    }
+
+    /**
+     * Throws a Curl Exception
+     *
+     * @param  string  $message
+     * @param  integer $code
+     *
+     * @return never
+     */
+    private function throw(string|null $message = '', int $code = 0): never
+    {
+        throw new CurlException($message, $code);
     }
 }
